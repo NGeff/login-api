@@ -1,26 +1,38 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
-const Database = require("better-sqlite3");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 
 app.use(express.json());
 
-// Banco SQLite local
-const db = new Database("database.db");
+const DATA_PATH = path.join(
+    __dirname,
+    "../data/users.json"
+);
 
-// Criar tabela
-db.prepare(`
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    password TEXT,
-    expires_at INTEGER
-)
-`).run();
+// Ler usuários
+function getUsers() {
+    if (!fs.existsSync(DATA_PATH)) {
+        fs.writeFileSync(DATA_PATH, "[]");
+    }
+
+    const data = fs.readFileSync(DATA_PATH);
+
+    return JSON.parse(data);
+}
+
+// Salvar usuários
+function saveUsers(users) {
+    fs.writeFileSync(
+        DATA_PATH,
+        JSON.stringify(users, null, 2)
+    );
+}
 
 
-// Endpoint inicial
+// Status
 app.get("/", (req, res) => {
     res.json({
         status: "online"
@@ -28,44 +40,53 @@ app.get("/", (req, res) => {
 });
 
 
-// Criar login
+// Registrar usuário
 app.post("/register", async (req, res) => {
     try {
-        const { username, password, days } = req.body;
+
+        const {
+            username,
+            password,
+            days
+        } = req.body;
 
         if (!username || !password || !days) {
             return res.status(400).json({
-                error: "username, password e days são obrigatórios"
+                error:
+                    "username, password e days são obrigatórios"
             });
         }
 
-        // Verifica se usuário já existe
-        const existing = db.prepare(`
-            SELECT * FROM users WHERE username = ?
-        `).get(username);
+        const users = getUsers();
 
-        if (existing) {
+        // Verifica se já existe
+        const exists = users.find(
+            u => u.username === username
+        );
+
+        if (exists) {
             return res.status(400).json({
                 error: "Usuário já existe"
             });
         }
 
         // Criptografar senha
-        const hash = await bcrypt.hash(password, 10);
+        const hashedPassword =
+            await bcrypt.hash(password, 10);
 
-        // Data de expiração
+        // Expiração
         const expiresAt =
-            Date.now() + (days * 24 * 60 * 60 * 1000);
+            Date.now() +
+            days * 24 * 60 * 60 * 1000;
 
-        // Inserir no banco
-        db.prepare(`
-            INSERT INTO users (
-                username,
-                password,
-                expires_at
-            )
-            VALUES (?, ?, ?)
-        `).run(username, hash, expiresAt);
+        // Criar usuário
+        users.push({
+            username,
+            password: hashedPassword,
+            expiresAt
+        });
+
+        saveUsers(users);
 
         res.json({
             success: true,
@@ -73,22 +94,30 @@ app.post("/register", async (req, res) => {
         });
 
     } catch (err) {
+
         res.status(500).json({
             error: "Erro interno"
         });
+
     }
 });
 
 
-// Verificar login
+// Login
 app.post("/login", async (req, res) => {
-    try {
-        const { username, password } = req.body;
 
-        const user = db.prepare(`
-            SELECT * FROM users
-            WHERE username = ?
-        `).get(username);
+    try {
+
+        const {
+            username,
+            password
+        } = req.body;
+
+        const users = getUsers();
+
+        const user = users.find(
+            u => u.username === username
+        );
 
         if (!user) {
             return res.json({
@@ -97,19 +126,20 @@ app.post("/login", async (req, res) => {
             });
         }
 
-        // Verificar expiração
-        if (Date.now() > user.expires_at) {
+        // Verifica expiração
+        if (Date.now() > user.expiresAt) {
             return res.json({
                 valid: false,
                 reason: "Conta expirada"
             });
         }
 
-        // Verificar senha
-        const match = await bcrypt.compare(
-            password,
-            user.password
-        );
+        // Verifica senha
+        const match =
+            await bcrypt.compare(
+                password,
+                user.password
+            );
 
         if (!match) {
             return res.json({
@@ -120,15 +150,17 @@ app.post("/login", async (req, res) => {
 
         res.json({
             valid: true,
-            expiresAt: user.expires_at,
+            expiresAt: user.expiresAt,
             remainingMs:
-                user.expires_at - Date.now()
+                user.expiresAt - Date.now()
         });
 
     } catch (err) {
+
         res.status(500).json({
             error: "Erro interno"
         });
+
     }
 });
 
