@@ -1,54 +1,20 @@
+require("dotenv").config();
+
 const express = require("express");
 const bcrypt = require("bcryptjs");
-const fs = require("fs");
+const {
+    createClient
+} = require("@supabase/supabase-js");
 
 const app = express();
 
 app.use(express.json());
 
-// Arquivo temporário da Vercel
-const DATA_PATH = "/tmp/users.json";
-
-
-// Criar arquivo se não existir
-function ensureFile() {
-
-    if (!fs.existsSync(DATA_PATH)) {
-
-        fs.writeFileSync(
-            DATA_PATH,
-            "[]"
-        );
-
-    }
-
-}
-
-
-// Ler usuários
-function getUsers() {
-
-    ensureFile();
-
-    const raw = fs.readFileSync(
-        DATA_PATH,
-        "utf8"
-    );
-
-    return JSON.parse(raw || "[]");
-
-}
-
-
-// Salvar usuários
-function saveUsers(users) {
-
-    fs.writeFileSync(
-        DATA_PATH,
-        JSON.stringify(users, null, 2)
-    );
-
-}
+// Supabase
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_KEY
+);
 
 
 // Status API
@@ -86,14 +52,16 @@ app.post("/register", async (req, res) => {
 
         }
 
-        const users = getUsers();
+        // Verificar se usuário já existe
+        const {
+            data: existingUser
+        } = await supabase
+            .from("users")
+            .select("id")
+            .eq("username", username)
+            .single();
 
-        // Verifica se já existe
-        const exists = users.find(
-            u => u.username === username
-        );
-
-        if (exists) {
+        if (existingUser) {
 
             return res.status(400).json({
                 error: "Usuário já existe"
@@ -105,7 +73,7 @@ app.post("/register", async (req, res) => {
         const hashedPassword =
             await bcrypt.hash(password, 10);
 
-        // Expiração
+        // Tempo de expiração
         const expiresAt =
             Date.now() +
             (
@@ -116,14 +84,24 @@ app.post("/register", async (req, res) => {
                 1000
             );
 
-        // Criar usuário
-        users.push({
-            username,
-            password: hashedPassword,
-            expiresAt
-        });
+        // Inserir usuário
+        const {
+            error
+        } = await supabase
+            .from("users")
+            .insert({
+                username,
+                password: hashedPassword,
+                expires_at: expiresAt
+            });
 
-        saveUsers(users);
+        if (error) {
+
+            return res.status(500).json({
+                error: error.message
+            });
+
+        }
 
         return res.json({
             success: true,
@@ -154,14 +132,17 @@ app.post("/login", async (req, res) => {
             password
         } = req.body;
 
-        const users = getUsers();
-
         // Buscar usuário
-        const user = users.find(
-            u => u.username === username
-        );
+        const {
+            data: user,
+            error
+        } = await supabase
+            .from("users")
+            .select("*")
+            .eq("username", username)
+            .single();
 
-        if (!user) {
+        if (!user || error) {
 
             return res.json({
                 valid: false,
@@ -174,7 +155,7 @@ app.post("/login", async (req, res) => {
         // Verificar expiração
         if (
             Date.now() >
-            user.expiresAt
+            user.expires_at
         ) {
 
             return res.json({
@@ -202,13 +183,12 @@ app.post("/login", async (req, res) => {
 
         }
 
-        // Login válido
         return res.json({
             valid: true,
             username: user.username,
-            expiresAt: user.expiresAt,
+            expiresAt: user.expires_at,
             remainingMs:
-                user.expiresAt -
+                user.expires_at -
                 Date.now()
         });
 
@@ -225,5 +205,4 @@ app.post("/login", async (req, res) => {
 });
 
 
-// Export Vercel
 module.exports = app;
